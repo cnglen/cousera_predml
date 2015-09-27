@@ -1,0 +1,129 @@
+---
+title: "Weight Lifting Exercise Prediction"
+author: "Jacky Wang"
+date: "September 24, 2015"
+output: html_document
+---
+
+# Introduction
+
+  In this predict, we will use data from accelerometers on the belt,
+  forearm, arm, and dumbell of 6 participants. They were asked to
+  perform barbell lifts correctly and incorrectly in 5 different
+  ways. We will use machine learning algorithms to predict the 5
+  different activities.
+
+
+# Get the raw data
+
+Download the data if necessary, then load the raw data.
+```{r}
+pml_training_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+pml_testing_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+pml_training_file <- '../data/pml-training.csv'
+pml_testing_file <- '../data/pml-testing.csv'
+if( !file.exists(pml_training_file)) {
+    download.file(pml_training_url, destfile = pml_training_file, method = "wget")
+}
+if( !file.exists(pml_testing_file)) {
+    download.file(pml_testing_url, destfile = pml_testing_file, method = "wget")
+}
+raw_data <- read.csv(pml_training_file, header = TRUE, stringsAsFactors = FALSE,
+                    na.strings = c("NA", "", "#DIV/0!"))
+```
+
+# Preprocess and explore the data
+
++ *classe* are denoted as *factor*
++ Remove irrelevant features, such as *X*, *user_name*, and etc.
++ Remove features which doesn't have enough variation using *nearZeroVar*
++ Remove featrues which has >95% parts of NA
++ Remove features with high correlations
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(caret)
+## Remove irrelevant features
+processed_data <- raw_data %>%
+    dplyr::mutate(classe = factor(classe)) %>%
+        dplyr::select(-X, -user_name, -new_window, -num_window,
+                      -raw_timestamp_part_1, -raw_timestamp_part_2, -cvtd_timestamp)
+## Remove featrues which doesn't have enough variation
+nzv_result <- nearZeroVar(processed_data[, sapply(processed_data, is.numeric)], saveMetrics = TRUE)
+nzv_column_name <- c(rownames(nzv_result)[nzv_result[, "nzv"] == TRUE])
+for (nzv_j in nzv_column_name) {
+    processed_data[, nzv_j] <- NULL
+}
+## Remove columns contains too much NA ( >0.95)
+processed_data <- processed_data[, sapply(processed_data, function(x) sum(is.na(x)))
+                                <= 0.95 * nrow(processed_data)]
+## Remove columns with high correlations
+cor_matrx <- cor(processed_data[, sapply(processed_data, is.numeric)])
+index_high_cor <- findCorrelation(cor_matrx, cutoff = 0.90)
+hcr_column_name <- colnames(cor_matrx)[index_high_cor]
+for (hcr_j in hcr_column_name) {
+    processed_data[, hcr_j] <- NULL
+}
+
+```
+# Classfication
+## Split into training set and testing set
+```{r, message=FALSE, warning=FALSE}
+index_training <- createDataPartition(y = processed_data$classe, p = 0.6, list = FALSE)
+training_data <- processed_data[index_training, ]
+testing_data <- processed_data[ -index_training, ]
+```
+## Cross validation
+We use repeatedcv to select the best tuning parameters for each model.
+To save time, the number of folds and repeats are set to small numbers.
+```{r, message=FALSE, warning=FALSE}
+train_control <- trainControl(method = "repeatedcv",
+                             number = 3,
+                             repeats = 2)
+```
+## Models
++ random forest
++ boosting: gbm
+
+```{r, message=FALSE, warning=FALSE}
+## boosting model: gbm
+gbm_grid <- expand.grid(n.trees = 5, interaction.depth = c(1:5), shrinkage = .1)
+gbm_model <- train(classe ~ .,  method = "gbm", data = training_data,
+                  trControl = train_control, tuneGrid = gbm_grid, verbose = FALSE)
+
+## random forest
+rf_grid <- expand.grid(mtry = 10)
+rf_model <- train(classe ~., method = "rf", data = training_data,
+                 trControl = train_control, tuneGrid = rf_grid)
+```
+# Evaluation
+In testing data set, the performance of each model is evaluated.
+Random forest performs better than gbm.
+
+```{r, message=FALSE, warning=FALSE}
+y_est_gbm <- predict(gbm_model, newdata = testing_data)
+y_est_rf <- predict(rf_model, newdata = testing_data)
+cm_gbm <- confusionMatrix(y_est_gbm, testing_data$classe)
+cm_rf <- confusionMatrix(y_est_rf, testing_data$classe)
+as.table(cm_gbm)
+as.table(cm_rf)
+```
+
+The expected the out of sample error (testing set) is shown below.
+```{r}
+cm_rf$byClass
+cm_rf$overall
+```
+
+Feature importance is shown below.
+```{r}
+plot(varImp(rf_model))
+```
+
+# Results
+We use random forest to predict the 20 submitt test case.
+```{r}
+raw_data_validation <- read.csv(pml_testing_file, header = TRUE,
+                               stringsAsFactors = FALSE, na.strings = c("NA", ""))
+predict(rf_model, newdata = raw_data_validation)
+```
